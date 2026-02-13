@@ -151,8 +151,8 @@ if uploaded_files and api_key:
             try:
                 genai.configure(api_key=api_key)
                 
-                # 利用可能なモデルを動的に取得
-                active_model = None
+                # 1. 利用可能なモデルを動的に取得
+                valid_model_names = []
                 try:
                     all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                     valid_model_names = [m.name.replace("models/", "") for m in all_models]
@@ -160,16 +160,14 @@ if uploaded_files and api_key:
                     if valid_model_names:
                         # Flash -> Pro の順で優先順位を決める
                         valid_model_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
-                        active_model = valid_model_names[0]
                 except Exception as e:
-                    st.warning(f"モデル一覧の取得に失敗しました: {e}。デフォルト設定で試行します。")
+                    st.warning(f"モデル一覧の取得に失敗しました: {e}")
                 
-                # 取得できなければフォールバック
-                if not active_model:
-                    active_model = "gemini-1.5-flash"
+                # 取得できなければデフォルトフォールバック
+                if not valid_model_names:
+                    valid_model_names = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
 
-                model = genai.GenerativeModel(active_model)
-                
+                # 2. プロンプト作成
                 count_instruction = ""
                 if num_questions and num_questions.isdigit():
                     count_instruction = f"問題数は {num_questions} 問程度作成してください。"
@@ -194,10 +192,28 @@ if uploaded_files and api_key:
                 }}
                 テキストが見つからない場合は空のリストを返してください。
                 """
-
-                # テキストプロンプトと画像リストを結合して渡す
                 content_parts = [prompt] + images
-                response = model.generate_content(content_parts)
+
+                # 3. モデルを順に試行するループ
+                response = None
+                active_model = None
+                last_error = None
+                
+                for model_name in valid_model_names:
+                    try:
+                        # st.toast(f"モデル {model_name} で試行中...", icon="🤖") # Optional
+                        model = genai.GenerativeModel(model_name)
+                        response = model.generate_content(content_parts)
+                        active_model = model_name
+                        break # 成功したらループを抜ける
+                    except Exception as e:
+                        print(f"Model {model_name} failed: {e}")
+                        last_error = e
+                        continue
+                
+                if not response:
+                    raise last_error or Exception("全てのモデルで解析に失敗しました。APIキーを確認してください。")
+
                 text_response = response.text
                 
                 # --- クリーニング処理 ---
@@ -250,7 +266,3 @@ if "qa_data" in st.session_state:
 
 elif not api_key:
     st.warning("👈 サイドバーでAPIキーを入力してください")
-
-elif not api_key:
-    st.warning("👈 サイドバーでAPIキーを入力してください")
-
