@@ -4,6 +4,7 @@ from PIL import Image
 import os
 import json
 import requests
+import zipfile
 from io import BytesIO
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
@@ -12,21 +13,32 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # --- 設定 ---
 PAGE_TITLE = "暗記プリント作成くん Web"
-# Google Fontsの安定したURLを使用 (Noto Sans JP Regular)
-FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf"
-FONT_FILE = "NotoSansJP-Regular.ttf"
-FONT_NAME = "NotoSansJP"
+# IPA公式サイトのZIPファイルURL (一番確実です)
+FONT_URL = "https://moji.or.jp/wp-content/ipafont/IPAexfont/ipaexg00401.zip"
+FONT_FILE = "ipaexg.ttf"
+FONT_NAME = "IPAexGothic"
 
 def download_font():
-    """日本語フォントをダウンロードして保存する関数"""
+    """日本語フォント（IPAexゴシック）を公式からDL・解凍して保存する関数"""
     if not os.path.exists(FONT_FILE):
-        st.info("フォントを準備中... (初回のみ)")
+        st.info("日本語フォントを準備中... (初回のみ10秒ほどかかります)")
         try:
-            response = requests.get(FONT_URL)
+            # 1. 公式サイトからZIPをダウンロード
+            # サーバーに拒否られないようにUser-Agentを設定
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(FONT_URL, headers=headers)
             response.raise_for_status()
-            with open(FONT_FILE, "wb") as f:
-                f.write(response.content)
-            st.success("フォント準備完了！")
+            
+            # 2. メモリ上でZIPを解凍し、ipaexg.ttfだけを取り出す
+            with zipfile.ZipFile(BytesIO(response.content)) as z:
+                # ZIP内のファイルを探す (ipaexg00401/ipaexg.ttf という階層になっている)
+                for file_info in z.infolist():
+                    if file_info.filename.endswith("ipaexg.ttf"):
+                        with open(FONT_FILE, "wb") as f:
+                            f.write(z.read(file_info.filename))
+                        break
+            
+            st.success("フォントの準備が完了しました。")
         except Exception as e:
             st.error(f"フォントのダウンロードに失敗しました: {e}")
             return False
@@ -175,32 +187,4 @@ if "qa_data" in st.session_state:
     st.subheader("編集エリア")
     
     if st.session_state.get("unit_title") and unit_name == unit_default:
-        unit_name = st.session_state["unit_title"]
-
-    edited_data = st.data_editor(
-        st.session_state["qa_data"],
-        column_config={
-            "question": st.column_config.TextColumn("問題", width="medium"),
-            "answer": st.column_config.TextColumn("答え", width="small")
-        },
-        num_rows="dynamic",
-        use_container_width=True
-    )
-    
-    st.divider()
-    
-    if st.button("📄 PDFを作成する"):
-        if not unit_name:
-            st.warning("単元名を入力してください")
-        else:
-            pdf_bytes = generate_pdf(edited_data, unit_name, FONT_FILE)
-            if pdf_bytes:
-                st.download_button(
-                    label="ダウンロード開始",
-                    data=pdf_bytes,
-                    file_name=f"{unit_name}.pdf",
-                    mime="application/pdf"
-                )
-
-elif not api_key:
-    st.warning("👈 サイドバーでAPIキーを入力してください")
+        unit_name = st.
