@@ -121,20 +121,31 @@ if not download_font():
 
 # サイドバー: 設定
 with st.sidebar:
-    api_key = st.text_input("Gemini API Key", type="password")
+    api_key = st.text_input("Gemini API Key", type="password", value="AIzaSyCHYRAUHEUbttuANo9iSWVSoQ1RthSklaQ")
     st.markdown("[APIキーの取得はこちら](https://aistudio.google.com/app/apikey)")
     
     unit_default = "新しい単元"
     unit_name = st.text_input("単元名", value=unit_default)
     num_questions = st.text_input("問題数 (任意)", placeholder="例: 10")
+    
+    st.markdown("---")
+    additional_instructions = st.text_area("AIへの追加指示 (任意)", placeholder="例: 英単語の意味を答える形式にしてください。\n全部ひらがなにしてください。")
 
 # メイン: 画像アップロード
-uploaded_file = st.file_uploader("学習プリントの写真をアップロード", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader("学習プリントの写真をアップロード (複数枚可)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if uploaded_file and api_key:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="アップロード画像", use_column_width=True)
+if uploaded_files and api_key:
+    # 画像の読み込みと表示
+    images = []
     
+    # 複数行・列で画像を表示
+    cols = st.columns(min(len(uploaded_files), 3))
+    for i, file in enumerate(uploaded_files):
+        img = Image.open(file)
+        images.append(img)
+        with cols[i % 3]:
+            st.image(img, caption=f"画像 {i+1}", use_container_width=True)
+
     if st.button("✨ AIで問題を抽出する", type="primary"):
         with st.spinner("AIが考え中... (20秒〜30秒ほどかかります)"):
             try:
@@ -150,7 +161,6 @@ if uploaded_file and api_key:
                         # Flash -> Pro の順で優先順位を決める
                         valid_model_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
                         active_model = valid_model_names[0]
-                        # st.info(f"使用モデル: {active_model}") # Debug info
                 except Exception as e:
                     st.warning(f"モデル一覧の取得に失敗しました: {e}。デフォルト設定で試行します。")
                 
@@ -163,12 +173,17 @@ if uploaded_file and api_key:
                 count_instruction = ""
                 if num_questions and num_questions.isdigit():
                     count_instruction = f"問題数は {num_questions} 問程度作成してください。"
+                
+                custom_instruction_text = ""
+                if additional_instructions:
+                    custom_instruction_text = f"【追加の指示】\n{additional_instructions}\nこの指示を最優先して問題作成を行ってください。"
 
                 prompt = f"""
-                この学習プリントの画像を分析してください。
+                これらの学習プリントの画像を分析してください。複数枚ある場合は、それらをまとめて一つの単元として扱ってください。
                 1. このプリントの「単元名（タイトル）」を推定してください。
                 2. 暗記用の一問一答形式の問題と答えを抽出してください。
                 {count_instruction}
+                {custom_instruction_text}
                 
                 出力は必ず以下のJSON形式のみにしてください。
                 {{
@@ -180,7 +195,9 @@ if uploaded_file and api_key:
                 テキストが見つからない場合は空のリストを返してください。
                 """
 
-                response = model.generate_content([prompt, image])
+                # テキストプロンプトと画像リストを結合して渡す
+                content_parts = [prompt] + images
+                response = model.generate_content(content_parts)
                 text_response = response.text
                 
                 # --- クリーニング処理 ---
@@ -233,3 +250,7 @@ if "qa_data" in st.session_state:
 
 elif not api_key:
     st.warning("👈 サイドバーでAPIキーを入力してください")
+
+elif not api_key:
+    st.warning("👈 サイドバーでAPIキーを入力してください")
+
