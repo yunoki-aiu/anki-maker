@@ -212,6 +212,14 @@ if "qa_data" not in st.session_state:
 
             prompt = f'''
             この学習プリントの画像を分析してください。
+            
+            【重要ルール】
+            1. **画像に書かれている内容のみ**を元に問題を作成してください。
+            2. 画像にない知識（外部知識）は絶対に使わないでください。
+            3. 「資料を見れば誰でも解ける」レベルの問題に限定してください。
+            4. 画像内の説明文や図表から読み取れる事実だけを問いにしてください。
+
+            【タスク】
             1. このプリントの「単元名（タイトル）」を推定してください。
             2. 暗記用の一問一答形式の問題と答えを抽出してください。
             {count_instruction}
@@ -305,35 +313,3 @@ else:
         st.rerun()
 
     st.divider()
-
-    # データ編集
-    edited_data = st.data_editor(
-        st.session_state["qa_data"],
-        column_config={
-            "question": st.column_config.TextColumn("問題", width="medium"),
-            "answer": st.column_config.TextColumn("答え", width="small")
-        },
-        num_rows="dynamic",
-        use_container_width=True
-    )
-    
-    st.divider()
-    
-    # PDF生成 & ダウンロードボタン
-    # ボタンを押して生成するのではなく、データがある限り常にDLボタンを表示しておく
-    
-    current_unit_name = st.session_state.get("unit_title", "学習プリント")
-    if not current_unit_name:
-        current_unit_name = "学習プリント"
-
-    # PDFバイト列を作成
-    pdf_bytes = generate_pdf(edited_data, current_unit_name, FONT_FILE)
-    
-    if pdf_bytes:
-        st.download_button(
-            label="📄 PDFをダウンロード",
-            data=pdf_bytes,
-            file_name=f"{current_unit_name}.pdf",
-            mime="application/pdf",
-            type="primary"
-        )
