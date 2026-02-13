@@ -9,32 +9,24 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.utils import simpleSplit
 
 # --- 設定 ---
 PAGE_TITLE = "暗記プリント作成くん Web"
-FONT_URL = "https://moji.or.jp/wp-content/ipafont/IPAexfont/ipaexg00401.zip" # IPAex Gothic (zip) - Using a direct .ttf link is better if available, but for stability we can check a known stable source or cache it.
-# Alternative stable source for a single TTF often used in Colab/Streamlit examples:
-FONT_URL_DIRECT = "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/Japanese/NotoSansCJKjp-Regular.otf"
-# However, user requested IPAex or similar. Let's use a reliable source for IPAexGothic or Noto Sans JP.
-# Let's use Noto Sans JP as it covers Japanese well and is easy to fetch.
-# Or stick to IPAexGothic.
-FONT_FILE = "ipaexg.ttf"
-FONT_NAME = "IPAexGothic"
+# Google Fontsの安定したURLを使用 (Noto Sans JP Regular)
+FONT_URL = "https://github.com/google/fonts/raw/main/ofl/notosansjp/NotoSansJP-Regular.ttf"
+FONT_FILE = "NotoSansJP-Regular.ttf"
+FONT_NAME = "NotoSansJP"
 
 def download_font():
-    """日本語フォント（IPAexゴシック）をダウンロードして保存する関数"""
+    """日本語フォントをダウンロードして保存する関数"""
     if not os.path.exists(FONT_FILE):
-        st.info("日本語フォントをダウンロード中... (初回のみ)")
-        # Using a reliable direct link to IPAexGothic.ttf from a CDN or repository is preferred.
-        # Here we use a font often used in Japanese Python environments.
-        url = "https://github.com/minoryorg/ipaex-font/raw/main/ipaexg.ttf"
+        st.info("フォントを準備中... (初回のみ)")
         try:
-            response = requests.get(url)
+            response = requests.get(FONT_URL)
             response.raise_for_status()
             with open(FONT_FILE, "wb") as f:
                 f.write(response.content)
-            st.success("フォントのダウンロードが完了しました。")
+            st.success("フォント準備完了！")
         except Exception as e:
             st.error(f"フォントのダウンロードに失敗しました: {e}")
             return False
@@ -78,7 +70,7 @@ def generate_pdf(qa_data, unit_title, font_path):
         q_text = str(item.get("question", ""))
         a_text = str(item.get("answer", ""))
         
-        # 文字数での折り返し（デスクトップ版と同じロジック）
+        # 文字数での折り返し
         q_lines = [q_text[i:i+33] for i in range(0, len(q_text), 33)]
         a_lines = [a_text[i:i+13] for i in range(0, len(a_text), 13)]
         
@@ -182,12 +174,9 @@ if uploaded_file and api_key:
 if "qa_data" in st.session_state:
     st.subheader("編集エリア")
     
-    # AIが推定したタイトルがあれば上書き提案
     if st.session_state.get("unit_title") and unit_name == unit_default:
         unit_name = st.session_state["unit_title"]
-        # st.toast(f"単元名を「{unit_name}」に更新しました") # Streamlitのバージョンによってはtoastがない場合もあるので今回は省略
 
-    # データエディタ (編集可能テーブル)
     edited_data = st.data_editor(
         st.session_state["qa_data"],
         column_config={
@@ -200,7 +189,6 @@ if "qa_data" in st.session_state:
     
     st.divider()
     
-    # PDF生成ボタン
     if st.button("📄 PDFを作成する"):
         if not unit_name:
             st.warning("単元名を入力してください")
