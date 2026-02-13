@@ -140,7 +140,7 @@ if not download_font():
 
 # サイドバー: 設定
 with st.sidebar:
-    api_key = st.text_input("Gemini API Key", type="password", value="AIzaSyCHYRAUHEUbttuANo9iSWVSoQ1RthSklaQ")
+    api_key = st.text_input("Gemini API Key", type="password", value="")
     st.markdown("[APIキーの取得はこちら](https://aistudio.google.com/app/apikey)")
     
     # AIで推定された単元名があればそれを初期値にする
@@ -192,6 +192,7 @@ if "qa_data" not in st.session_state:
             # 1. モデル選択ロジック (Web版は速度優先: Flash > Lite > Pro)
             valid_model_names = []
             try:
+                # APIキーが無効な場合、ここでエラー(403)になる可能性がある
                 all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
                 names = [m.name.replace("models/", "") for m in all_models]
                 
@@ -206,9 +207,15 @@ if "qa_data" not in st.session_state:
                 valid_model_names.extend(others)
 
             except Exception as e:
+                # 403エラー(API Key無効)などの場合は、リスト取得できないため、
+                # 強制的に有効そうなモデル名を手動設定するしかないが、
+                # キー自体が死んでいる場合はそもそも generate_content も失敗する。
+                # ただし、一時的なエラーの可能性もあるので、最も無難なモデルのみをセットする。
                 st.warning(f"モデル一覧の取得に失敗しました: {e}")
             
             if not valid_model_names:
+                # 404エラーを避けるため、確実に存在するモデル名のみを指定
+                # gemini-pro (v1.0) は廃止傾向にあるため除外
                 valid_model_names = ["gemini-1.5-flash"]
 
             # 2. プロンプト作成 (標準版に戻す)
