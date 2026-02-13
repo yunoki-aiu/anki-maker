@@ -119,6 +119,22 @@ st.title("📱 暗記プリント作成くん Web")
 if not download_font():
     st.stop()
 
+def resize_image(image, max_size=1600):
+    """
+    画像の長辺がmax_sizeを超えないように、アスペクト比を維持してリサイズする。
+    LANCZOSフィルタを使用して、文字の視認性を確保する。
+    """
+    width, height = image.size
+    if max(width, height) > max_size:
+        if width > height:
+            new_width = max_size
+            new_height = int(height * (max_size / width))
+        else:
+            new_height = max_size
+            new_width = int(width * (max_size / height))
+        return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    return image
+
 # サイドバー: 設定
 with st.sidebar:
     api_key = st.text_input("Gemini API Key", type="password", value="AIzaSyCHYRAUHEUbttuANo9iSWVSoQ1RthSklaQ")
@@ -136,101 +152,130 @@ uploaded_files = st.file_uploader("学習プリントの写真をアップロー
 
 if uploaded_files and api_key:
     # 画像の読み込みと表示
-    images = []
+    st.markdown(f"**{len(uploaded_files)} 枚の画像を読み込みました**")
     
-    # 複数行・列で画像を表示
-    cols = st.columns(min(len(uploaded_files), 3))
-    for i, file in enumerate(uploaded_files):
-        img = Image.open(file)
-        images.append(img)
-        with cols[i % 3]:
-            st.image(img, caption=f"画像 {i+1}", use_container_width=True)
+    # 複数行・列で画像を表示 (プレビューはあくまで確認用なのでオリジナルで軽量表示)
+    with st.expander("画像のプレビューを表示", expanded=False):
+        cols = st.columns(min(len(uploaded_files), 3))
+        for i, file in enumerate(uploaded_files):
+            img = Image.open(file)
+            with cols[i % 3]:
+                st.image(img, caption=f"画像 {i+1}", use_container_width=True)
 
-    if st.button("✨ AIで問題を抽出する", type="primary"):
-        with st.spinner("AIが考え中... (20秒〜30秒ほどかかります)"):
-            try:
-                genai.configure(api_key=api_key)
-                
-                # 1. 利用可能なモデルを動的に取得
-                valid_model_names = []
-                try:
-                    all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                    valid_model_names = [m.name.replace("models/", "") for m in all_models]
-                    
-                    if valid_model_names:
-                        # Flash -> Pro の順で優先順位を決める
-                        valid_model_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
-                except Exception as e:
-                    st.warning(f"モデル一覧の取得に失敗しました: {e}")
-                
-                # 取得できなければデフォルトフォールバック
-                if not valid_model_names:
-                    valid_model_names = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+    if st.button("✨ AIで問題を抽出する (一括処理)", type="primary"):
+        # プログレスバーとステータス表示
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        aggregated_qa_list = []
+        detected_unit_title = unit_default
+        total_files = len(uploaded_files)
+        
+        genai.configure(api_key=api_key)
+        
+        # モデル選択ロジック (1回だけ実行)
+        active_model = "gemini-1.5-flash"
+        try:
+            all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            valid_names = [m.name.replace("models/", "") for m in all_models]
+            if valid_names:
+                # Flash -> Pro 優先
+                valid_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
+                active_model = valid_names[0]
+        except:
+            pass # 失敗したらデフォルト(flash)を使う
+            
+        model = genai.GenerativeModel(active_model)
 
-                # 2. プロンプト作成
-                count_instruction = ""
-                if num_questions and num_questions.isdigit():
-                    count_instruction = f"問題数は {num_questions} 問程度作成してください。"
-                
-                custom_instruction_text = ""
-                if additional_instructions:
-                    custom_instruction_text = f"【追加の指示】\n{additional_instructions}\nこの指示を最優先して問題作成を行ってください。"
+        # 共通プロンプト作成
+        count_instruction = ""
+        if num_questions and num_questions.isdigit():
+            count_instruction = f"この画像からは、全体のバランスを考えて適度な数の問題を抽出してください。" # 個別処理なので「10問」とか指定すると各ページ10問作ってしまう恐れがあるため調整
+        
+        custom_instruction_text = ""
+        if additional_instructions:
+            custom_instruction_text = f"【追加の指示】\n{additional_instructions}\nこの指示を最優先して問題作成を行ってください。"
 
-                prompt = f"""
-                これらの学習プリントの画像を分析してください。複数枚ある場合は、それらをまとめて一つの単元として扱ってください。
-                1. このプリントの「単元名（タイトル）」を推定してください。
-                2. 暗記用の一問一答形式の問題と答えを抽出してください。
-                {count_instruction}
-                {custom_instruction_text}
-                
-                出力は必ず以下のJSON形式のみにしてください。
-                {{
-                    "unit_title": "推定された単元名",
-                    "qa_list": [
-                        {{"question": "問題文...", "answer": "答え..."}}
-                    ]
-                }}
-                テキストが見つからない場合は空のリストを返してください。
-                """
-                content_parts = [prompt] + images
+        prompt = f"""
+        この学習プリントの画像を分析してください。
+        1. このプリントの「単元名（タイトル）」を推定してください。
+        2. 暗記用の一問一答形式の問題と答えを抽出してください。
+        {count_instruction}
+        {custom_instruction_text}
+        
+        出力は必ず以下のJSON形式のみにしてください。
+        {{
+            "unit_title": "推定された単元名",
+            "qa_list": [
+                {{"question": "問題文...", "answer": "答え..."}}
+            ]
+        }}
+        テキストが見つからない場合は空のリストを返してください。
+        """
 
-                # 3. モデルを順に試行するループ
+        try:
+            for i, file_obj in enumerate(uploaded_files):
+                current_idx = i + 1
+                status_text.text(f"処理中 ({current_idx}/{total_files}): {file_obj.name} を解析しています...")
+                
+                # 1. 画像を開く & リサイズ (メモリ対策)
+                img = Image.open(file_obj)
+                resized_img = resize_image(img)
+                
+                # 2. Gemini API 呼び出し (リトライロジック付き)
                 response = None
-                active_model = None
-                last_error = None
-                
-                for model_name in valid_model_names:
-                    try:
-                        # st.toast(f"モデル {model_name} で試行中...", icon="🤖") # Optional
-                        model = genai.GenerativeModel(model_name)
-                        response = model.generate_content(content_parts)
-                        active_model = model_name
-                        break # 成功したらループを抜ける
-                    except Exception as e:
-                        print(f"Model {model_name} failed: {e}")
-                        last_error = e
-                        continue
-                
-                if not response:
-                    raise last_error or Exception("全てのモデルで解析に失敗しました。APIキーを確認してください。")
+                try:
+                    response = model.generate_content([prompt, resized_img])
+                except Exception as e:
+                    # モデル個別のエラーなら他モデルでリトライ…などの複雑なことはループ内では一旦省略し、
+                    # シンプルに次の画像へ行くか、この画像だけProで試すなどが考えられるが、
+                    # ここではシンプルにエラーログを出して続行する形にする (全体を止めない)
+                    st.warning(f"{file_obj.name} の解析に失敗しました: {e}")
+                    continue
 
+                if not response:
+                    continue
+
+                # 3. JSONパース
                 text_response = response.text
-                
-                # --- クリーニング処理 ---
                 if "```json" in text_response:
                     text_response = text_response.split("```json")[1].split("```")[0].strip()
                 elif "```" in text_response:
                     text_response = text_response.split("```")[1].split("```")[0].strip()
                 
-                data = json.loads(text_response)
+                try:
+                    data = json.loads(text_response)
+                    # QAリストを結合
+                    page_qa = data.get("qa_list", [])
+                    aggregated_qa_list.extend(page_qa)
+                    
+                    # 単元名 (まだ取得できていない場合、またはデフォルトのままの場合に更新)
+                    extracted_title = data.get("unit_title", "")
+                    if extracted_title and detected_unit_title == unit_default:
+                        detected_unit_title = extracted_title
+                        
+                except json.JSONDecodeError:
+                    st.warning(f"{file_obj.name}: AIの応答が正しいJSONではありませんでした。")
+                    continue
                 
-                # 結果をSession Stateに保存
-                st.session_state["qa_data"] = data.get("qa_list", [])
-                st.session_state["unit_title"] = data.get("unit_title", unit_default)
-                st.success(f"抽出完了！ ({active_model})")
+                # プログレスバー更新
+                progress_bar.progress(current_idx / total_files)
+
+            # ループ終了後
+            status_text.text("すべての処理が完了しました！")
+            progress_bar.progress(1.0)
+            
+            # 結果をSession Stateに保存
+            st.session_state["qa_data"] = aggregated_qa_list
+            st.session_state["unit_title"] = detected_unit_title
+            
+            if aggregated_qa_list:
+                st.success(f"完了！ 合計 {len(aggregated_qa_list)} 問の問題を抽出しました。")
+            else:
+                st.warning("問題が見つかりませんでした。")
                 
-            except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
+        except Exception as e:
+            st.error(f"システムエラーが発生しました: {e}")
 
 # 結果表示 & 編集エリア
 if "qa_data" in st.session_state:
