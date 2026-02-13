@@ -43,7 +43,7 @@ def download_font():
             return False
     return True
 
-def resize_image(image, max_size=1600):
+def resize_image(image, max_size=2500):
     """
     画像の長辺がmax_sizeを超えないように、アスペクト比を維持してリサイズする。
     LANCZOSフィルタを使用して、文字の視認性を確保する。
@@ -65,9 +65,10 @@ def generate_pdf(qa_data, unit_title, font_path):
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
     
-    # フォント登録
+    # フォント登録 (重複登録エラー防止)
     try:
-        pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
+        if FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
         c.setFont(FONT_NAME, 12)
     except Exception as e:
         st.error(f"フォント読み込みエラー: {e}")
@@ -94,8 +95,9 @@ def generate_pdf(qa_data, unit_title, font_path):
     c.line(margin, y, width - margin, y)
 
     for item in qa_data:
-        q_text = str(item.get("question", ""))
-        a_text = str(item.get("answer", ""))
+        # データ型を強制的に文字列にする (エラー防止)
+        q_text = str(item.get("question", "") or "")
+        a_text = str(item.get("answer", "") or "")
         
         # 文字数での折り返し
         q_lines = [q_text[i:i+33] for i in range(0, len(q_text), 33)]
@@ -187,21 +189,29 @@ if "qa_data" not in st.session_state:
             
             genai.configure(api_key=api_key)
             
-            # 1. モデル選択ロジック
+            # 1. モデル選択ロジック (Web版は速度優先: Flash > Lite > Pro)
             valid_model_names = []
             try:
                 all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                valid_model_names = [m.name.replace("models/", "") for m in all_models]
-                if valid_model_names:
-                    # Flash -> Pro の順で優先順位
-                    valid_model_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
+                names = [m.name.replace("models/", "") for m in all_models]
+                
+                # 優先順位: Flash > Pro
+                candidates = ["gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-pro-latest"]
+                for c in candidates:
+                    if c in names:
+                        valid_model_names.append(c)
+                
+                # その他
+                others = [n for n in names if "flash" in n and n not in valid_model_names]
+                valid_model_names.extend(others)
+
             except Exception as e:
                 st.warning(f"モデル一覧の取得に失敗しました: {e}")
             
             if not valid_model_names:
-                valid_model_names = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]
+                valid_model_names = ["gemini-1.5-flash"]
 
-            # 2. プロンプト作成
+            # 2. プロンプト作成 (標準版に戻す)
             count_instruction = ""
             if num_questions and num_questions.isdigit():
                 count_instruction = f"全体でバランスよく抽出してください。" 
@@ -213,12 +223,6 @@ if "qa_data" not in st.session_state:
             prompt = f'''
             この学習プリントの画像を分析してください。
             
-            【重要ルール】
-            1. **画像に書かれている内容のみ**を元に問題を作成してください。
-            2. 画像にない知識（外部知識）は絶対に使わないでください。
-            3. 「資料を見れば誰でも解ける」レベルの問題に限定してください。
-            4. 画像内の説明文や図表から読み取れる事実だけを問いにしてください。
-
             【タスク】
             1. このプリントの「単元名（タイトル）」を推定してください。
             2. 暗記用の一問一答形式の問題と答えを抽出してください。
@@ -235,30 +239,48 @@ if "qa_data" not in st.session_state:
             テキストが見つからない場合は空のリストを返してください。
             '''
 
+            import time
+            import re
+
             try:
                 for i, file_obj in enumerate(uploaded_files):
                     current_idx = i + 1
                     status_text.text(f"処理中 ({current_idx}/{total_files}): {file_obj.name} を解析しています...")
                     
-                    # 画像を開く & リサイズ (メモリ対策)
+                    # 画像を開く & リサイズ
                     img = Image.open(file_obj)
-                    resized_img = resize_image(img)
+                    resized_img = resize_image(img, max_size=1600) # 標準画質に戻す
                     
-                    # Gemini API 呼び出し (リトライループ)
+                    # Gemini API 呼び出し
                     response = None
                     last_error = None
                     
+                    # モデルループ (回数は減らす)
                     for model_name in valid_model_names:
                         try:
-                            model = genai.GenerativeModel(model_name)
-                            response = model.generate_content([prompt, resized_img])
-                            break # 成功
-                        except Exception as e:
-                            last_error = e
+                            # 簡易リトライ (最大3回)
+                            for attempt in range(3):
+                                try:
+                                    status_text.text(f"処理中 ({current_idx}/{total_files}): {model_name} で解析中... (Attempt {attempt+1})")
+                                    model = genai.GenerativeModel(model_name)
+                                    # JSONモードは維持するが、温度は少し上げて自然にする
+                                    generation_config = genai.types.GenerationConfig(
+                                        temperature=0.1,
+                                        response_mime_type="application/json"
+                                    )
+                                    response = model.generate_content([prompt, resized_img], generation_config=generation_config)
+                                    break # Success inner loop
+                                except Exception as e:
+                                    last_error = e
+                                    time.sleep(2) # 短い待機
+                            
+                            if response:
+                                break # Success outer loop
+                        except:
                             continue
                     
                     if not response:
-                        st.warning(f"{file_obj.name} の解析に失敗しました: {last_error}")
+                        st.error(f"{file_obj.name} の解析に失敗しました: {last_error}")
                         continue
 
                     # JSONパース
@@ -271,7 +293,19 @@ if "qa_data" not in st.session_state:
                     try:
                         data = json.loads(text_response)
                         page_qa = data.get("qa_list", [])
-                        aggregated_qa_list.extend(page_qa)
+                        
+                        # --- データ正規化 (ここが重要) ---
+                        # JSONが変な形式でも壊れないように文字列型に強制変換する
+                        normalized_qa = []
+                        if isinstance(page_qa, list):
+                            for item in page_qa:
+                                if isinstance(item, dict):
+                                    q = str(item.get("question", "") or "")
+                                    a = str(item.get("answer", "") or "")
+                                    if q.strip() or a.strip(): # 空っぽの行は除外
+                                        normalized_qa.append({"question": q, "answer": a})
+                        
+                        aggregated_qa_list.extend(normalized_qa)
                         
                         extracted_title = data.get("unit_title", "")
                         if extracted_title and detected_unit_title == unit_default:
@@ -313,3 +347,46 @@ else:
         st.rerun()
 
     st.divider()
+
+    # データ編集
+    qa_data = st.session_state["qa_data"]
+    
+    if not qa_data:
+        st.warning("抽出されたデータが空です。")
+    else:
+        try:
+            edited_data = st.data_editor(
+                qa_data,
+                column_config={
+                    "question": st.column_config.TextColumn("問題", width="medium"),
+                    "answer": st.column_config.TextColumn("答え", width="small")
+                },
+                num_rows="dynamic",
+                use_container_width=True
+            )
+            
+            st.divider()
+            
+            # PDF生成 & ダウンロードボタン
+            current_unit_name = st.session_state.get("unit_title", "学習プリント")
+            if not current_unit_name:
+                current_unit_name = "学習プリント"
+
+            # PDFバイト列を作成
+            pdf_bytes = generate_pdf(edited_data, current_unit_name, FONT_FILE)
+            
+            if pdf_bytes:
+                st.download_button(
+                    label="📄 PDFをダウンロード",
+                    data=pdf_bytes,
+                    file_name=f"{current_unit_name}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            else:
+                st.error("PDF生成中にエラーが発生しました。")
+        
+        except Exception as e:
+            st.error(f"データの表示中にエラーが発生しました: {e}")
+            with st.expander("詳細データ（デバッグ用）"):
+                st.write(qa_data)
