@@ -13,10 +13,10 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # --- 設定 ---
 PAGE_TITLE = "暗記プリント作成くん Web"
-# IPA公式サイトのZIPファイルURL (一番確実です)
-FONT_URL = "https://moji.or.jp/wp-content/ipafont/IPAexfont/ipaexg00401.zip"
 FONT_FILE = "ipaexg.ttf"
 FONT_NAME = "IPAexGothic"
+# IPA公式サイトのZIPファイルURL
+FONT_URL = "https://moji.or.jp/wp-content/ipafont/IPAexfont/ipaexg00401.zip"
 
 def download_font():
     """日本語フォント（IPAexゴシック）を公式からDL・解凍して保存する関数"""
@@ -24,14 +24,12 @@ def download_font():
         st.info("日本語フォントを準備中... (初回のみ10秒ほどかかります)")
         try:
             # 1. 公式サイトからZIPをダウンロード
-            # サーバーに拒否られないようにUser-Agentを設定
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(FONT_URL, headers=headers)
+            response = requests.get(FONT_URL)
             response.raise_for_status()
             
             # 2. メモリ上でZIPを解凍し、ipaexg.ttfだけを取り出す
             with zipfile.ZipFile(BytesIO(response.content)) as z:
-                # ZIP内のファイルを探す (ipaexg00401/ipaexg.ttf という階層になっている)
+                # ZIP内のファイルを探す
                 for file_info in z.infolist():
                     if file_info.filename.endswith("ipaexg.ttf"):
                         with open(FONT_FILE, "wb") as f:
@@ -141,7 +139,11 @@ if uploaded_file and api_key:
         with st.spinner("AIが考え中... (20秒〜30秒ほどかかります)"):
             try:
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-1.5-flash")
+                
+                # 試行するモデルのリスト (優先順)
+                models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-001", "gemini-pro"]
+                response = None
+                used_model = None
                 
                 count_instruction = ""
                 if num_questions and num_questions.isdigit():
@@ -162,8 +164,23 @@ if uploaded_file and api_key:
                 }}
                 テキストが見つからない場合は空のリストを返してください。
                 """
+
+                last_error = None
+                for model_name in models_to_try:
+                    try:
+                        # st.toast(f"モデル {model_name} で試行中...", icon="🤖") # Optional feedback
+                        model = genai.GenerativeModel(model_name)
+                        response = model.generate_content([prompt, image])
+                        used_model = model_name
+                        break # Success
+                    except Exception as e:
+                        last_error = e
+                        print(f"Model {model_name} failed: {e}")
+                        continue
                 
-                response = model.generate_content([prompt, image])
+                if not response:
+                    raise last_error or Exception("全てのモデルで解析に失敗しました。APIキーを確認してください。")
+
                 text_response = response.text
                 
                 # --- クリーニング処理 ---
@@ -177,7 +194,7 @@ if uploaded_file and api_key:
                 # 結果をSession Stateに保存
                 st.session_state["qa_data"] = data.get("qa_list", [])
                 st.session_state["unit_title"] = data.get("unit_title", unit_default)
-                st.success("抽出完了！")
+                st.success(f"抽出完了！ (使用モデル: {used_model})")
                 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
