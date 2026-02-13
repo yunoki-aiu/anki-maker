@@ -187,4 +187,32 @@ if "qa_data" in st.session_state:
     st.subheader("編集エリア")
     
     if st.session_state.get("unit_title") and unit_name == unit_default:
-        unit_name = st.
+        unit_name = st.session_state["unit_title"]
+
+    edited_data = st.data_editor(
+        st.session_state["qa_data"],
+        column_config={
+            "question": st.column_config.TextColumn("問題", width="medium"),
+            "answer": st.column_config.TextColumn("答え", width="small")
+        },
+        num_rows="dynamic",
+        use_container_width=True
+    )
+    
+    st.divider()
+    
+    if st.button("📄 PDFを作成する"):
+        if not unit_name:
+            st.warning("単元名を入力してください")
+        else:
+            pdf_bytes = generate_pdf(edited_data, unit_name, FONT_FILE)
+            if pdf_bytes:
+                st.download_button(
+                    label="ダウンロード開始",
+                    data=pdf_bytes,
+                    file_name=f"{unit_name}.pdf",
+                    mime="application/pdf"
+                )
+
+elif not api_key:
+    st.warning("👈 サイドバーでAPIキーを入力してください")
