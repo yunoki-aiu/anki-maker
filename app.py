@@ -140,10 +140,25 @@ if uploaded_file and api_key:
             try:
                 genai.configure(api_key=api_key)
                 
-                # 試行するモデルのリスト (優先順)
-                models_to_try = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.5-flash-001", "gemini-pro"]
-                response = None
-                used_model = None
+                # 利用可能なモデルを動的に取得
+                active_model = None
+                try:
+                    all_models = [m for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    valid_model_names = [m.name.replace("models/", "") for m in all_models]
+                    
+                    if valid_model_names:
+                        # Flash -> Pro の順で優先順位を決める
+                        valid_model_names.sort(key=lambda x: (not "flash" in x, not "1.5" in x))
+                        active_model = valid_model_names[0]
+                        # st.info(f"使用モデル: {active_model}") # Debug info
+                except Exception as e:
+                    st.warning(f"モデル一覧の取得に失敗しました: {e}。デフォルト設定で試行します。")
+                
+                # 取得できなければフォールバック
+                if not active_model:
+                    active_model = "gemini-1.5-flash"
+
+                model = genai.GenerativeModel(active_model)
                 
                 count_instruction = ""
                 if num_questions and num_questions.isdigit():
@@ -165,22 +180,7 @@ if uploaded_file and api_key:
                 テキストが見つからない場合は空のリストを返してください。
                 """
 
-                last_error = None
-                for model_name in models_to_try:
-                    try:
-                        # st.toast(f"モデル {model_name} で試行中...", icon="🤖") # Optional feedback
-                        model = genai.GenerativeModel(model_name)
-                        response = model.generate_content([prompt, image])
-                        used_model = model_name
-                        break # Success
-                    except Exception as e:
-                        last_error = e
-                        print(f"Model {model_name} failed: {e}")
-                        continue
-                
-                if not response:
-                    raise last_error or Exception("全てのモデルで解析に失敗しました。APIキーを確認してください。")
-
+                response = model.generate_content([prompt, image])
                 text_response = response.text
                 
                 # --- クリーニング処理 ---
@@ -194,7 +194,7 @@ if uploaded_file and api_key:
                 # 結果をSession Stateに保存
                 st.session_state["qa_data"] = data.get("qa_list", [])
                 st.session_state["unit_title"] = data.get("unit_title", unit_default)
-                st.success(f"抽出完了！ (使用モデル: {used_model})")
+                st.success(f"抽出完了！ ({active_model})")
                 
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")
